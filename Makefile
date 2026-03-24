@@ -60,9 +60,20 @@ SUPPRESS_PYTHON_OUTPUT ?=
 # When enabled, EFA installer provides RDMA packages; otherwise use CUDA base image packages
 ENABLE_EFA ?= false
 
+# BUILD_ARGS: Pass additional build-arg key=value pairs (space-separated)
+# Example: make image-build BUILD_ARGS="FOO=bar BAZ=qux"
+BUILD_ARGS ?=
+EXTRA_BUILD_ARGS := $(foreach arg,$(BUILD_ARGS),--build-arg $(arg))
+
+# Auto-forward every variable defined in docker/common-versions as --build-arg
+COMMON_VERSION_VARS := $(shell grep -oP '^[A-Z_][\w]*(?==)' docker/common-versions)
+COMMON_VERSION_BUILD_ARGS := $(foreach v,$(COMMON_VERSION_VARS),--build-arg $(v)=$($(v)))
+
 .PHONY: help
 help: ## Print help
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z_0-9-]+:.*?##/ { printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
+	@printf "\n\033[1mBuild Examples:\033[0m\n"
+	@printf "  \033[36mmake image-build BUILD_ARGS=\"FOO=bar BAZ=qux\"\033[0m          # Build with extra build args\n"
 	@printf "\n\033[1mXPU Build Examples:\033[0m\n"
 	@printf "  \033[36mmake image-build DEVICE=xpu\033[0m                    # Build Intel XPU Docker image\n"
 	@printf "  \033[36mmake image-build DEVICE=xpu VERSION=v0.2.0\033[0m     # Build with specific version\n"
@@ -109,7 +120,9 @@ buildah-build: check-builder ## Build and push image (multi-arch if supported)
 		ARCH_TAG=$$FINAL_TAG-$$arch; \
 	    echo "📦 Building for architecture: $$arch"; \
 		buildah build --file $(DOCKERFILE_PATH) --arch=$$arch --os=linux --layers \
+			$(COMMON_VERSION_BUILD_ARGS) \
 			$(if $(filter cuda,$(DEVICE)),--build-arg ENABLE_EFA=$(ENABLE_EFA)) \
+			$(EXTRA_BUILD_ARGS) \
 			-t $(IMG)-$$arch $(BUILD_CONTEXT) || exit 1; \
 	    echo "🚀 Pushing image: $(IMG)-$$arch"; \
 	    buildah push $(IMG)-$$arch docker://$(IMG)-$$arch || exit 1; \
@@ -129,13 +142,15 @@ buildah-build: check-builder ## Build and push image (multi-arch if supported)
 	  - docker buildx create --use --name image-builder || true; \
 	  docker buildx use image-builder; \
 	  docker buildx build --push --platform=$(PLATFORMS) --tag $(IMG) \
+		$(COMMON_VERSION_BUILD_ARGS) \
 		$(if $(filter cuda,$(DEVICE)),--build-arg ENABLE_EFA=$(ENABLE_EFA)) \
+		$(EXTRA_BUILD_ARGS) \
 		-f $(DOCKERFILE_DIR)/Dockerfile.cross $(BUILD_CONTEXT) || exit 1; \
 	  docker buildx rm image-builder || true; \
 	  rm $(DOCKERFILE_DIR)/Dockerfile.cross; \
 	elif [ "$(BUILDER)" = "podman" ]; then \
 	  echo "⚠️ Podman detected: Building single-arch image..."; \
-	  podman build --format=docker -f $(DOCKERFILE_PATH) -t $(IMG) $(BUILD_CONTEXT) || exit 1; \
+	  podman build --format=docker -f $(DOCKERFILE_PATH) $(COMMON_VERSION_BUILD_ARGS) $(EXTRA_BUILD_ARGS) -t $(IMG) $(BUILD_CONTEXT) || exit 1; \
 	  podman push $(IMG) || exit 1; \
 	else \
 	  echo "❌ No supported container tool available."; \
@@ -147,9 +162,11 @@ image-build: check-container-tool ## Build Docker image using $(CONTAINER_TOOL)
 	@printf "\033[33;1m==== Building Docker image $(IMG) ====\033[0m\n"
 	@if [ "$(DEVICE)" = "xpu" ]; then $(MAKE) xpu-prepare; fi
 	$(CONTAINER_TOOL) build --progress=plain --platform $(PLATFORMS) \
+		$(COMMON_VERSION_BUILD_ARGS) \
 		$(if $(SUPPRESS_PYTHON_OUTPUT),--build-arg SUPPRESS_PYTHON_OUTPUT=$(SUPPRESS_PYTHON_OUTPUT)) \
 		--build-arg BUILD_DEBUG=$(BUILD_DEBUG) \
 		$(if $(filter cuda,$(DEVICE)),--build-arg ENABLE_EFA=$(ENABLE_EFA)) \
+		$(EXTRA_BUILD_ARGS) \
 		-t $(IMG) -f $(DOCKERFILE_PATH) $(BUILD_CONTEXT)
 
 .PHONY: xpu-prepare
