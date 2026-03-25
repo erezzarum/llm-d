@@ -1,3 +1,4 @@
+ARG BASE_IMAGE_SUFFIX=ubi9
 # Important: For Ubuntu builds, we use an older version (20.04) in the build stage
 # to maintain broad glibc compatibility. Binaries built with newer glibc versions
 # are not backwards compatible with OSes using earlier glibc versions.
@@ -14,7 +15,7 @@ ARG CUDA_MINOR=9
 ARG CUDA_PATCH=1
 ARG TARGETOS=rhel
 ARG TARGETPLATFORM=linux/amd64
-ARG BASE_IMAGE_SUFFIX=ubi9
+
 ARG PYTHON_VERSION=3.12
 
 ARG USE_SCCACHE=true
@@ -35,6 +36,9 @@ ARG GDRCOPY_VERSION="v2.5.2"
 ARG UCX_REPO="https://github.com/openucx/ucx.git"
 ARG UCX_VERSION="v1.20.0"
 
+ARG LIBFABRIC_REPO="https://github.com/ofiwg/libfabric.git"
+ARG LIBFABRIC_VERSION="v2.4.0"
+
 ARG NVSHMEM_USE_GIT="true"
 ARG NVSHMEM_REPO="https://github.com/NVIDIA/nvshmem.git"
 ARG NVSHMEM_VERSION="v3.5.19-1"
@@ -51,7 +55,7 @@ ARG LMCACHE_VERSION="v0.4.1"
 
 # Kernels
 # NM fork of Deepep for duplicate nvshmem IBGDA definitions, see: https://github.com/deepseek-ai/DeepEP/pull/581.
-# Also GKE nic-pe mapping, see: https://github.com/deepseek-ai/DeepEP/pull/466 
+# Also GKE nic-pe mapping, see: https://github.com/deepseek-ai/DeepEP/pull/466
 # Commits cherry-picked on top of: `https://github.com/deepseek-ai/DeepEP/commit/567632dd59810d77b3cc05553df953cc0f779799`
 ARG DEEPEP_REPO="https://github.com/neuralmagic/DeepEP"
 # branch: https://github.com/neuralmagic/DeepEP/tree/llm-d-release-v0.5.1, but frozen at commit:
@@ -121,13 +125,8 @@ ENV LANG="C.UTF-8" \
 
 COPY docker/scripts/cuda/common/package-utils.sh /tmp/package-utils.sh
 COPY docker/packages /tmp/packages
-COPY docker/scripts/cuda/common/install-efa.sh /tmp/install-efa.sh
-RUN EFA_MODE="builder" /tmp/install-efa.sh && \
-    rm -f /tmp/install-efa.sh /tmp/package-utils.sh && \
-    rm -rf /tmp/packages
 
 # Install base packages and EPEL in single layer
-# Note: DNF/YUM will automatically recognize RDMA packages already installed by EFA
 # and skip reinstallation, so no explicit filtering needed
 COPY docker/scripts/cuda/common/package-utils.sh /tmp/package-utils.sh
 COPY docker/packages /tmp/packages
@@ -160,13 +159,13 @@ RUN export UV_INSTALL_DIR=/usr/local/bin && \
 # Set up build environment paths
 ENV NVSHMEM_DIR="/opt/nvshmem-${NVSHMEM_VERSION}" \
     UCX_PREFIX="/opt/ucx" \
-    NIXL_PREFIX="/opt/nixl" \
-    EFA_PREFIX="/opt/amazon/efa"
+    LIBFABRIC_PREFIX="/opt/libfabric" \
+    NIXL_PREFIX="/opt/nixl"
 
 ENV PATH="${NVSHMEM_DIR}/bin:${VIRTUAL_ENV}/bin:${PATH}" \
     LIBRARY_PATH="\
-${EFA_PREFIX}/lib:${EFA_PREFIX}/lib64:\
 ${UCX_PREFIX}/lib:${UCX_PREFIX}/lib64:\
+${LIBFABRIC_PREFIX}/lib:${LIBFABRIC_PREFIX}/lib64:\
 ${NVSHMEM_DIR}/lib:${NVSHMEM_DIR}/lib64:\
 ${CUDA_HOME}/lib64:\
 /usr/local/lib:/usr/local/lib64:\
@@ -177,8 +176,8 @@ ${CUDA_HOME}/include:\
 /usr/include:\
 ${CPATH}" \
     PKG_CONFIG_PATH="\
-${EFA_PREFIX}/lib/pkgconfig:${EFA_PREFIX}/lib64/pkgconfig:\
 ${UCX_PREFIX}/lib/pkgconfig:${UCX_PREFIX}/lib64/pkgconfig:\
+${LIBFABRIC_PREFIX}/lib/pkgconfig:${LIBFABRIC_PREFIX}/lib64/pkgconfig:\
 /usr/local/lib/pkgconfig:\
 /usr/local/lib/x86_64-linux-gnu/pkgconfig:/usr/local/lib/aarch64-linux-gnu/pkgconfig:\
 /usr/lib64/pkgconfig:/usr/lib/pkgconfig:\
@@ -196,6 +195,16 @@ RUN --mount=type=cache,target=/var/cache/git \
     --mount=type=secret,id=aws_secret_access_key \
     /tmp/build-gdrcopy.sh && \
     rm -f /tmp/build-gdrcopy.sh
+
+# Build Libfabric
+ARG LIBFABRIC_REPO
+ARG LIBFABRIC_VERSION
+COPY docker/scripts/cuda/builder/build-libfabric.sh /tmp/build-libfabric.sh
+RUN --mount=type=cache,target=/var/cache/git \
+    --mount=type=secret,id=aws_access_key_id \
+    --mount=type=secret,id=aws_secret_access_key \
+    /tmp/build-libfabric.sh && \
+    rm -f /tmp/build-libfabric.sh
 
 # Build UCX
 ARG UCX_REPO
@@ -231,7 +240,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     pyyaml \
     types-PyYAML \
     pytest \
-    "patchelf>=0.11.0"
+    "patchelf>=0.11.0" \
+    tomlkit
 
 ### Decide to build NIXL from source.
 # If set to false, NIXL will be installed as a dependency of vLLM in the `install-vllm.sh` script,
@@ -326,7 +336,6 @@ ENV LD_LIBRARY_PATH="\
 /opt/vllm/lib64/python${PYTHON_VERSION}/site-packages/torch/lib:\
 /usr/local/nvidia/lib:/usr/local/nvidia/lib64:\
 ${CUDA_HOME}/lib64:\
-${EFA_PREFIX}/lib:${EFA_PREFIX}/lib64:\
 ${UCX_PREFIX}/lib:${UCX_PREFIX}/lib64:\
 ${NVSHMEM_DIR}/lib:${NVSHMEM_DIR}/lib64:\
 /usr/local/lib:/usr/local/lib64:\
@@ -339,14 +348,6 @@ ${LD_LIBRARY_PATH}" \
     CUDA_MAJOR=${CUDA_MAJOR} \
     CUDA_MINOR=${CUDA_MINOR}
 
-# Install runtime RDMA core packages through AWS EFA installer if EFA is enabled
-COPY docker/scripts/cuda/common/package-utils.sh /tmp/package-utils.sh
-COPY docker/packages /tmp/packages
-COPY docker/scripts/cuda/common/install-efa.sh /tmp/install-efa.sh
-RUN EFA_MODE="runtime" /tmp/install-efa.sh && \
-    rm -f /tmp/install-efa.sh /tmp/package-utils.sh && \
-    rm -rf /tmp/packages
-
 # Install runtime dependencies
 COPY docker/scripts/cuda/common/package-utils.sh /tmp/package-utils.sh
 COPY docker/packages /tmp/packages
@@ -355,15 +356,18 @@ RUN /tmp/install-runtime-packages.sh && \
     rm -f /tmp/install-runtime-packages.sh /tmp/package-utils.sh && \
     rm -rf /tmp/packages
 
+# Install the AWS EFA installer if EFA is enabled
+COPY docker/scripts/cuda/common/package-utils.sh /tmp/package-utils.sh
+COPY docker/packages /tmp/packages
+COPY docker/scripts/cuda/common/install-efa.sh /tmp/install-efa.sh
+RUN /tmp/install-efa.sh && \
+    rm -f /tmp/install-efa.sh /tmp/package-utils.sh && \
+    rm -rf /tmp/packages
+
 # Copy in storage offloading connector wheel
 COPY docker/scripts/common/install-offloading-connector.sh /tmp/install-offloading-connector.sh
 RUN /tmp/install-offloading-connector.sh && \
     rm -f /tmp/install-offloading-connector.sh
-
-# Copy EFA installation if enabled
-# EFA libs are copied to /usr/lib64 during install-efa.sh and saved to /tmp/efa_libs
-COPY --from=builder /opt/amazon /opt/amazon/
-COPY --from=builder /tmp/efa_libs/* /usr/lib64/
 
 # Copy gdrcopy libraries from builder
 # Install to /usr/local/lib (always present) and multiarch lib dir

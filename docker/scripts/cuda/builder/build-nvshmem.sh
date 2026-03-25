@@ -8,8 +8,6 @@ set -Eeux
 : "${ENABLE_EFA:=false}"
 # - BUILD_DEBUG: whether to build with debug symbols and logging (true/false) - defaults to false
 : "${BUILD_DEBUG:=false}"
-# Required environment variables (from Dockerfile ENV):
-# - EFA_PREFIX: Path to EFA installation (used if ENABLE_EFA=true)
 # Required environment variables:
 # - TARGETOS: OS type (ubuntu or rhel)
 # - CUDA_MAJOR: CUDA major version (e.g., 12)
@@ -20,6 +18,7 @@ set -Eeux
 # - NVSHMEM_DIR: NVSHMEM installation directory
 # - NVSHMEM_CUDA_ARCHITECTURES: CUDA architectures to build for
 # - UCX_PREFIX: Path to UCX installation
+# - LIBFABRIC_PREFIX: Path to Libfabric installation
 # - VIRTUAL_ENV: Path to the virtual environment from which python will be pulled
 # - USE_SCCACHE: whether to use sccache (true/false)
 # - PYTHON_VERSION: Python version (e.g., 3.12)
@@ -27,7 +26,7 @@ set -Eeux
 cd /tmp
 
 if [ "${BUILD_DEBUG}" = "true" ]; then
-    # Disable sccache for nvshmem build in debug mode for nvcc + sccache + cmake weirdness. 
+    # Disable sccache for nvshmem build in debug mode for nvcc + sccache + cmake weirdness.
     # Not an issue for regular builds, only for BUILD_DEBUG=true
     export USE_SCCACHE="false"
 fi
@@ -66,7 +65,7 @@ EFA_FLAGS=()
 if [ "${ENABLE_EFA}" = "true" ] && [ "$TARGETOS" = "rhel" ]; then
     EFA_FLAGS=(
         -DNVSHMEM_LIBFABRIC_SUPPORT=1
-        -DLIBFABRIC_HOME="${EFA_PREFIX}"
+        -DLIBFABRIC_HOME="${LIBFABRIC_PREFIX}"
     )
 fi
 # Configure debug build options
